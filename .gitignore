@@ -11,3 +11,4 @@ data/nba.duckdb.wal
 models_store/*.joblib
 backtest_2025_2026_results.json
 assets/*.png
+*.bundle
