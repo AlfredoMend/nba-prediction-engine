@@ -43,7 +43,8 @@ def plot_all(games: pd.DataFrame, props: pd.DataFrame, report: dict, out_dir: Pa
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
 
-    # 1. Cumulative units (ATS & O/U, all bets at -110)
+    # 1. Cumulative units (ATS & O/U, all bets at -110); remove any stale curve when lines are absent
+    (out_dir / "roi_curve.png").unlink(missing_ok=True)
     if report["betting"].get("available"):
         fig, ax = _fig()
         for market, color, label in (("ats", S1, "Against the spread"), ("ou", S2, "Over/Under")):
