@@ -103,9 +103,10 @@ def page_games():
                            help=f"|model - market| ≥ {VALUE_EDGE_PTS} pts and model probability ≥ {VALUE_PROB:.0%}")
     g = preds[preds["game_date"].dt.date == day].copy()
 
-    g["ats_pick"] = np.where(g["spread_edge"] > 0, g["home"], g["away"])
+    # picks only exist when a market line is available
+    g["ats_pick"] = np.where(g["spread_edge"].isna(), "", np.where(g["spread_edge"] > 0, g["home"], g["away"]))
     g["ats_prob"] = np.where(g["spread_edge"] > 0, g["home_cover_prob"], 1 - g["home_cover_prob"] - g["spread_push_prob"].fillna(0))
-    g["ou_pick"] = np.where(g["total_edge"] > 0, "Over", "Under")
+    g["ou_pick"] = np.where(g["total_edge"].isna(), "", np.where(g["total_edge"] > 0, "Over", "Under"))
     g["ou_prob"] = np.where(g["total_edge"] > 0, g["over_prob"], 1 - g["over_prob"] - g["total_push_prob"].fillna(0))
     g["ats_value"] = (g["spread_edge"].abs() >= VALUE_EDGE_PTS) & (g["ats_prob"] >= VALUE_PROB)
     g["ou_value"] = (g["total_edge"].abs() >= VALUE_EDGE_PTS) & (g["ou_prob"] >= VALUE_PROB)
@@ -142,6 +143,8 @@ def page_games():
     })
     st.caption("⭐ = value play. Spreads are shown from the home team's perspective. Probabilities come from "
                "10,000 Monte Carlo simulations per game.")
+    if g["spread"].isna().all():
+        st.info("No market lines loaded, so picks and edges are blank. Set `ODDS_API_KEY` or add `data/lines.csv`.")
 
     st.subheader("Game detail")
     if g.empty:
