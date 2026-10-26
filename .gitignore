@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+catboost_info/
+# Generated state. Local runs (including synthetic demo runs) stay out of git;
+# the daily GitHub Action force-adds the real nba_api outputs.
+data/nba.duckdb
+data/raw/
+data/nba.duckdb.wal
+models_store/*.joblib
+backtest_2025_2026_results.json
+assets/*.png

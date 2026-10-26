@@ -1,0 +1,63 @@
+name: Daily data refresh & predictions
+
+on:
+  schedule:
+    - cron: "17 14 * * *"   # 14:17 UTC (~10am ET), after sportsdataverse publishes last night's games
+  workflow_dispatch:
+    inputs:
+      backtest:
+        description: "Also re-run the 2025-26 backtest"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      NBA_DATA_SOURCE: sportsdataverse
+      ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Past seasons never change; cache them so only the current season is downloaded
+      - name: Cache raw sportsdataverse files
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: sdv-raw-${{ github.run_id }}
+          restore-keys: sdv-raw-
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Update data, retrain and predict
+        run: python main.py --update-and-predict
+
+      - name: Backtest (manual runs only)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.backtest }}
+        run: python main.py --backtest --no-ingest
+
+      - name: Commit refreshed state
+        run: |
+          git config user.name "nba-predictor-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f data/nba.duckdb models_store/*.joblib
+          git add -f backtest_2025_2026_results.json assets/*.png 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: daily data refresh $(date -u +%Y-%m-%d) [skip ci]"
+          git push
