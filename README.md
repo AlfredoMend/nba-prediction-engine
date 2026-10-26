@@ -9,7 +9,7 @@ Streamlit UI.
 
 ```
 main.py                     CLI: --update-and-predict, --backtest
-app.py                      Streamlit UI (4 views)
+app.py                      Streamlit UI (5 views)
 src/config.py               paths, seasons, feature windows, betting conventions
 src/pipeline.py             ingest -> features -> train -> predict -> persist
 src/data/
@@ -17,7 +17,8 @@ src/data/
   injuries.py               ESPN injury feed (best effort) + data/injuries.csv overrides
   nba_fetch.py              alternative source: stats.nba.com (LeagueGameLog, PlayerIndex, ScoreboardV3/V2)
   synthetic.py              offline simulated league with the same schema (demo/CI only)
-  odds.py                   lines from CSV or The Odds API
+  odds.py                   lines from CSV or The Odds API (consensus spread/total/moneyline)
+  markets.py                free Vegas lines (ESPN scoreboard odds) + Kalshi prices, no-vig maths, Kalshi EV
   storage.py                DuckDB cache
   features.py               team ratings + EWMA(5/10/20), rest, B2B, travel, venue splits
   lineup.py                 rotation tracking, injury adjustment, minutes/usage redistribution
@@ -81,14 +82,35 @@ integer scores, simulated overtime) then gives win, cover and over probabilities
 (median) and an 80% interval. Over-probabilities against a line come from a two-piece normal
 fitted through the three quantiles.
 
+## Vegas vs Kalshi
+
+Every run fetches two kinds of market line for upcoming games:
+
+- **Vegas**: spread, total and moneylines from ESPN's scoreboard odds (free, no key). If
+  `ODDS_API_KEY` is set, The Odds API's consensus across US books takes priority.
+- **Kalshi**: public market data from `api.elections.kalshi.com` (no key needed for prices).
+  `KXNBAGAME` gives each team's win price; the `KXNBASPREAD` and `KXNBATOTAL` ladders are
+  turned into an implied spread and total (the line where the price crosses 50%).
+
+The **Vegas vs Kalshi** view puts model, no-vig Vegas and Kalshi win probabilities side by side,
+along with the three spreads and totals. It also shows the expected value of buying the model's
+side on Kalshi at the current ask, after Kalshi's taker fee (`ceil(0.07 x P x (1 - P))` per
+contract). Each run appends a timestamped snapshot to the `line_history` table, so closing lines
+build up for a future backtest against both markets.
+
 ## Limitations
 
 - Data freshness follows sportsdataverse, which usually publishes a night's games within about
   a day. The sidebar shows the latest completed game in the dataset.
-- Neither data source includes betting lines. Supply `data/lines.csv`, `data/prop_lines.csv`
-  (templates in `data/templates/`), or set `ODDS_API_KEY` for live game lines. Injuries come from
+- Historical lines are not available yet, so the 2025-26 backtest cannot score ATS/ROI against
+  Vegas or Kalshi. `line_history` starts collecting them from the first daily run. Supply
+  `data/lines.csv` with past closing lines to backfill. Prop lines need `data/prop_lines.csv`
+  (templates in `data/templates/`). Injuries come from
   ESPN's public feed when reachable, plus `data/injuries.csv` overrides.
   Without historical closing lines the backtest reports score and probability metrics but no ATS/ROI.
 - Player tracking metrics are not ingested. Box scores are used throughout.
 - The `nba_api` source has not been exercised against the live API (stats.nba.com was unreachable
   while this was built). The sportsdataverse source is the tested default.
+- The ESPN odds and Kalshi parsers were built from the documented response formats and tested
+  against sample payloads. Both fail soft: an unreachable host or changed payload logs a warning
+  and leaves those columns blank. Kalshi does not list every game, and markets may open late.

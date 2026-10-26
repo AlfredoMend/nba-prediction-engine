@@ -55,6 +55,19 @@ def load_models():
     return GameModel.load(), PropsModel.load()
 
 
+MARKET_COLS = ["spread", "total", "home_ml", "away_ml", "book", "vegas_home_prob", "kalshi_event",
+               "kalshi_home_prob", "kalshi_home_ask", "kalshi_away_ask", "kalshi_volume", "kalshi_spread",
+               "kalshi_total", "kalshi_best_side", "kalshi_best_ev", "spread_edge", "total_edge"]
+
+
+def with_market_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Predictions made before the Kalshi integration (or in synthetic mode) lack market columns."""
+    for c in MARKET_COLS:
+        if c not in df:
+            df[c] = "" if c in ("book", "kalshi_event", "kalshi_best_side") else np.nan
+    return df
+
+
 def fmt_spread(team: str, spread: float) -> str:
     return "n/a" if pd.isna(spread) else f"{team} {spread:+.1f}"
 
@@ -64,7 +77,7 @@ def fmt_spread(team: str, spread: float) -> str:
 # --------------------------------------------------------------------------- #
 meta = load_meta()
 st.sidebar.title("🏀 NBA Prediction Engine")
-page = st.sidebar.radio("View", ["Today's Games", "Player Props Hub", "Lineup & Injury Simulator",
+page = st.sidebar.radio("View", ["Today's Games", "Vegas vs Kalshi", "Player Props Hub", "Lineup & Injury Simulator",
                                  "2025-26 Model Accuracy"])
 st.sidebar.caption(f"Season {config.CURRENT_SEASON}")
 if meta:
@@ -95,6 +108,7 @@ def page_games():
     if preds.empty:
         st.info("No upcoming games found.")
         return
+    preds = with_market_cols(preds)
     preds["game_date"] = pd.to_datetime(preds["game_date"])
     dates = sorted(preds["game_date"].dt.date.unique())
     c1, c2 = st.columns([1, 3])
@@ -124,12 +138,14 @@ def page_games():
         "Pred score": g.apply(lambda r: f"{r.away} {r.pred_away_pts:.0f} - {r.home} {r.pred_home_pts:.0f}", axis=1),
         "Home win %": g["home_win_prob"] * 100,
         "Model spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["pred_spread"])],
-        "Market spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["spread"])],
+        "Vegas spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["spread"])],
+        "Kalshi spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["kalshi_spread"])],
         "Spread edge": g["spread_edge"].abs(),
         "ATS pick": g["ats_pick"] + np.where(g["ats_value"], " ⭐", ""),
         "Cover %": g["ats_prob"] * 100,
         "Model total": g["pred_total"],
-        "Market total": g["total"],
+        "Vegas total": g["total"],
+        "Kalshi total": g["kalshi_total"],
         "O/U pick": g["ou_pick"] + np.where(g["ou_value"], " ⭐", ""),
         "O/U %": g["ou_prob"] * 100,
     })
@@ -138,13 +154,16 @@ def page_games():
         "Spread edge": st.column_config.NumberColumn(format="%.1f pts"),
         "Cover %": st.column_config.NumberColumn(format="%.1f%%"),
         "Model total": st.column_config.NumberColumn(format="%.1f"),
-        "Market total": st.column_config.NumberColumn(format="%.1f"),
+        "Vegas total": st.column_config.NumberColumn(format="%.1f"),
+        "Kalshi total": st.column_config.NumberColumn(format="%.1f"),
         "O/U %": st.column_config.NumberColumn(format="%.1f%%"),
     })
-    st.caption("⭐ = value play. Spreads are shown from the home team's perspective. Probabilities come from "
-               "10,000 Monte Carlo simulations per game.")
+    st.caption("⭐ = value play against the Vegas line. Spreads are shown from the home team's perspective. "
+               "Probabilities come from 10,000 Monte Carlo simulations per game. Kalshi spread/total = the line where "
+               "Kalshi's price ladder crosses 50%.")
     if g["spread"].isna().all():
-        st.info("No market lines loaded, so picks and edges are blank. Set `ODDS_API_KEY` or add `data/lines.csv`.")
+        st.info("No Vegas lines loaded yet, so picks and edges are blank. They are fetched from ESPN on each daily "
+                "run (or set `ODDS_API_KEY`, or add `data/lines.csv`).")
 
     st.subheader("Game detail")
     if g.empty:
@@ -158,12 +177,92 @@ def page_games():
     m[0].metric(f"{r.home} win probability", f"{r.home_win_prob:.1%}")
     m[1].metric("80% margin range", f"{r.margin_p10:+.0f} to {r.margin_p90:+.0f}")
     m[2].metric("80% total range", f"{r.total_p10:.0f} to {r.total_p90:.0f}")
-    m[3].metric("Model vs market spread", f"{r.pred_spread:+.1f}",
+    m[3].metric("Model vs Vegas spread", f"{r.pred_spread:+.1f}",
                 delta=None if pd.isna(r.spread) else f"{r.pred_spread - r.spread:+.1f} vs {r.spread:+.1f}",
                 delta_color="off")
     c1, c2 = st.columns(2)
     c1.plotly_chart(charts.margin_distribution(sims, r.home, r.away, r.spread), use_container_width=True)
     c2.plotly_chart(charts.total_distribution(sims, r.total), use_container_width=True)
+
+
+# --------------------------------------------------------------------------- #
+# 1b. Vegas vs Kalshi
+# --------------------------------------------------------------------------- #
+KALSHI_MIN_EV = 0.03   # flag Kalshi bets worth at least 3 cents per $1 contract after fees
+
+
+def page_markets():
+    preds = load_table("pred_games")
+    if preds.empty:
+        st.info("No upcoming games found.")
+        return
+    preds = with_market_cols(preds)
+    preds["game_date"] = pd.to_datetime(preds["game_date"])
+    c1, c2 = st.columns([1, 3])
+    day = c1.selectbox("Game date", sorted(preds["game_date"].dt.date.unique()),
+                       format_func=lambda d: d.strftime("%a %b %d, %Y"), key="mk_day")
+    side = c2.radio("Show probabilities for", ["Home team", "Favourite"], horizontal=True)
+    g = preds[preds["game_date"].dt.date == day].copy()
+    g["label"] = g["away"] + " @ " + g["home"]
+
+    has_v, has_k = g["vegas_home_prob"].notna() | g["spread"].notna(), g["kalshi_home_prob"].notna()
+    gap = (g["vegas_home_prob"] - g["kalshi_home_prob"]).abs()
+    value = g["kalshi_best_ev"] >= KALSHI_MIN_EV
+    k = st.columns(4)
+    k[0].metric("Games with Vegas lines", f"{int(has_v.sum())} / {len(g)}")
+    k[1].metric("Games on Kalshi", f"{int(has_k.sum())} / {len(g)}")
+    k[2].metric("Avg Vegas vs Kalshi gap", f"{gap.mean() * 100:.1f} pp" if gap.notna().any() else "n/a",
+                help="Average absolute difference between the no-vig Vegas win probability and Kalshi's price")
+    k[3].metric("Kalshi value plays", int(value.sum()),
+                help=f"Model expects at least {KALSHI_MIN_EV * 100:.0f}¢ profit per $1 contract after Kalshi fees")
+
+    if not has_v.any() and not has_k.any():
+        meta_v, meta_k = meta.get("vegas_games", "?"), meta.get("kalshi_games", "?")
+        st.info(f"No market data for this date yet (last run: {meta_v} Vegas lines, {meta_k} Kalshi games). Vegas lines "
+                "come from ESPN's scoreboard odds and Kalshi prices from its public API on every daily run.")
+        return
+
+    # Probabilities from the chosen team's perspective
+    flip = (side == "Favourite") & (g["vegas_home_prob"].fillna(g["kalshi_home_prob"]).fillna(g["home_win_prob"]) < 0.5)
+    team = np.where(flip, g["away"], g["home"])
+    def persp(col):
+        return np.where(flip, 1 - g[col], g[col])
+    g["p_model"], g["p_vegas"], g["p_kalshi"] = persp("home_win_prob"), persp("vegas_home_prob"), persp("kalshi_home_prob")
+    g["label"] = g["label"] + " · " + team
+
+    st.plotly_chart(charts.market_comparison(
+        g, {"p_model": "Model", "p_vegas": "Vegas (no-vig)", "p_kalshi": "Kalshi"},
+        "Win probability: model vs Vegas vs Kalshi", f"{side} win probability"), use_container_width=True)
+
+    ev_txt = [f"{s} @ {a * 100:.0f}¢" if s else "" for s, a in zip(
+        g["kalshi_best_side"], np.where(g["kalshi_best_side"] == g["home"], g["kalshi_home_ask"], g["kalshi_away_ask"]))]
+    table = pd.DataFrame({
+        "Matchup": g["away"] + " @ " + g["home"], "Team": team,
+        "Model %": g["p_model"] * 100, "Vegas %": g["p_vegas"] * 100, "Kalshi %": g["p_kalshi"] * 100,
+        "Vegas–Kalshi (pp)": (g["p_vegas"] - g["p_kalshi"]) * 100,
+        "Model spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["pred_spread"])],
+        "Vegas spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["spread"])],
+        "Kalshi spread": [fmt_spread(h, s) for h, s in zip(g["home"], g["kalshi_spread"])],
+        "Model total": g["pred_total"], "Vegas total": g["total"], "Kalshi total": g["kalshi_total"],
+        "Kalshi bet": [t + (" ⭐" if v else "") for t, v in zip(ev_txt, value)],
+        "EV / $1": g["kalshi_best_ev"] * 100, "Kalshi volume": g["kalshi_volume"],
+    })
+    pct = st.column_config.NumberColumn(format="%.1f%%")
+    st.dataframe(table, hide_index=True, use_container_width=True, column_config={
+        "Model %": pct, "Vegas %": pct, "Kalshi %": pct,
+        "Vegas–Kalshi (pp)": st.column_config.NumberColumn(format="%+.1f"),
+        "Model total": st.column_config.NumberColumn(format="%.1f"),
+        "Vegas total": st.column_config.NumberColumn(format="%.1f"),
+        "Kalshi total": st.column_config.NumberColumn(format="%.1f"),
+        "EV / $1": st.column_config.NumberColumn(format="%+.1f¢"),
+        "Kalshi volume": st.column_config.NumberColumn(format="%,.0f"),
+    })
+    book = ", ".join(sorted({b for b in g["book"].dropna().astype(str) if b}))
+    st.caption(
+        f"Vegas: {book or 'n/a'} moneylines with the bookmaker margin removed. Kalshi: midpoint of the yes bid/ask "
+        "for each team, normalised to sum to 100%. Kalshi bet = the side the model prefers, bought at the current ask; "
+        f"EV is expected profit per $1 contract after Kalshi's taker fee. ⭐ = EV ≥ {KALSHI_MIN_EV * 100:.0f}¢. "
+        "Prices move; check the live market before trading.")
 
 
 # --------------------------------------------------------------------------- #
@@ -367,5 +466,5 @@ def page_accuracy():
                            for c in ["Model MAE", "L10 MAE", "Coverage %", "Avg interval width"]})
 
 
-{"Today's Games": page_games, "Player Props Hub": page_props, "Lineup & Injury Simulator": page_simulator,
+{"Today's Games": page_games, "Vegas vs Kalshi": page_markets, "Player Props Hub": page_props, "Lineup & Injury Simulator": page_simulator,
  "2025-26 Model Accuracy": page_accuracy}[page]()

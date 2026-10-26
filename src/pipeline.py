@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from src import config
-from src.data import odds
+from src.data import markets, odds
 from src.data.build import FeatureSet, build_features
 from src.data.storage import Storage
 from src.models.game_model import GameModel
@@ -44,8 +44,7 @@ def ingest(store: Storage, source: str, as_of: date, full_refresh: bool = False)
         store.write("raw_player_games", pg)
         store.write("players", players)
         store.write("schedule", sched)
-        lines = pd.concat([odds.load_lines_csv(), odds.fetch_live_lines()], ignore_index=True)
-        store.write("lines", lines.drop_duplicates(["game_date", "home", "away"], keep="last"))
+        refresh_markets(store, sched, as_of)
         store.write("prop_lines", odds.load_prop_lines_csv())
         store.write("injuries", load_injuries(pg))
         store.set_meta(latest_game=sportsdataverse.data_freshness(tg))
@@ -64,15 +63,37 @@ def ingest(store: Storage, source: str, as_of: date, full_refresh: bool = False)
         store.write("raw_player_games", pg)
         players = nba_fetch.fetch_players(seasons if have else None)
         store.write("players", _merge_players(store.read("players"), players) if have else players)
-        store.write("schedule", nba_fetch.fetch_schedule(as_of, days=3))
-        lines = pd.concat([odds.load_lines_csv(), odds.fetch_live_lines()], ignore_index=True)
-        store.write("lines", lines.drop_duplicates(["game_date", "home", "away"], keep="last"))
+        sched = nba_fetch.fetch_schedule(as_of, days=3)
+        store.write("schedule", sched)
+        refresh_markets(store, sched, as_of)
         store.write("prop_lines", odds.load_prop_lines_csv())
         store.write("injuries", _load_injuries(pg))
     else:
         raise ValueError(f"unknown data source {source!r}")
     store.set_meta(data_source=source, as_of=as_of.isoformat(),
                    ingested_at=datetime.now().isoformat(timespec="seconds"))
+
+
+def refresh_markets(store: Storage, schedule: pd.DataFrame, as_of: date) -> None:
+    """Vegas lines (CSV < ESPN < The Odds API, later sources win) and Kalshi prices.
+    Every run also appends a timestamped snapshot to `line_history`, building the
+    record of market lines needed to backtest against Vegas and Kalshi later."""
+    frames = [f for f in (odds.load_lines_csv(), markets.fetch_espn_lines(as_of, days=3), odds.fetch_live_lines())
+              if not f.empty]
+    if frames:
+        lines = pd.concat(frames, ignore_index=True)
+        lines = (lines.assign(game_date=pd.to_datetime(lines["game_date"]))
+                 .drop_duplicates(["game_date", "home", "away"], keep="last"))
+    else:
+        lines = pd.DataFrame(columns=markets.LINE_COLS)
+    kalshi = markets.fetch_kalshi_lines(schedule)
+    store.write("lines", lines)
+    store.write("kalshi", kalshi)
+    snap = markets.attach_markets(schedule[["game_date", "home", "away"]].copy(), lines, kalshi)
+    snap["fetched_at"] = datetime.now().isoformat(timespec="seconds")
+    store.write("line_history", snap, mode="append")
+    store.set_meta(vegas_games=int(lines["spread"].notna().sum()) if not lines.empty else 0,
+                   kalshi_games=len(kalshi))
 
 
 def _merge_players(old: pd.DataFrame, new: pd.DataFrame) -> pd.DataFrame:
@@ -108,15 +129,9 @@ def train_and_predict(fs: FeatureSet, store: Storage) -> dict:
     props_model.save()
 
     upcoming = fs.games[fs.games["is_upcoming"] == 1]
-    lines = store.read("lines")
-    preds = game_model.predict(upcoming)
-    if not lines.empty:
-        lines["game_date"] = pd.to_datetime(lines["game_date"])
-        preds = preds.merge(lines[["game_date", "home", "away", "spread", "total"]],
-                            on=["game_date", "home", "away"], how="left")
-    else:
-        preds["spread"], preds["total"] = np.nan, np.nan
+    preds = markets.attach_markets(game_model.predict(upcoming), store.read("lines"), store.read("kalshi"))
     preds = simulate_games(preds, game_model.sigma_home, game_model.sigma_away, game_model.rho)
+    preds = markets.add_kalshi_value(preds)
     preds["spread_edge"] = preds["pred_margin"] + preds["spread"]      # >0 favours home ATS
     preds["total_edge"] = preds["pred_total"] - preds["total"]         # >0 favours the over
     preds["model_version"] = game_model.trained_through

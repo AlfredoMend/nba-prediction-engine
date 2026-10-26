@@ -34,7 +34,7 @@ def margin_distribution(sims: pd.DataFrame, home: str, away: str, spread: float 
     fig.add_vline(x=0, line_color=MUTED, line_width=1)
     if spread is not None and not np.isnan(spread):
         fig.add_vline(x=-spread, line_color=S2, line_width=2, line_dash="dash",
-                      annotation_text=f"Market {home} {spread:+.1f}", annotation_font_color=TEXT)
+                      annotation_text=f"Vegas {home} {spread:+.1f}", annotation_font_color=TEXT)
     return _layout(fig, f"Simulated final margin ({home} minus {away}), 10,000 runs",
                    xaxis_title=f"{home} margin", yaxis_title="% of simulations", bargap=0.08)
 
@@ -44,7 +44,7 @@ def total_distribution(sims: pd.DataFrame, line: float | None) -> go.Figure:
                                  histnorm="percent", hovertemplate="Total %{x}: %{y:.1f}%<extra></extra>"))
     if line is not None and not np.isnan(line):
         fig.add_vline(x=line, line_color=S2, line_width=2, line_dash="dash",
-                      annotation_text=f"Market {line:.1f}", annotation_font_color=TEXT)
+                      annotation_text=f"Vegas {line:.1f}", annotation_font_color=TEXT)
     return _layout(fig, "Simulated total points", xaxis_title="Total", yaxis_title="% of simulations", bargap=0.08)
 
 
@@ -122,3 +122,28 @@ def monthly_line(df: pd.DataFrame, title: str) -> go.Figure:
                                  line=dict(color=color, width=2), marker=dict(size=8),
                                  hovertemplate="%{x}: %{y:.2f}<extra>" + col + "</extra>"))
     return _layout(fig, title, yaxis_title="MAE (points)", hovermode="x unified")
+
+
+def market_comparison(df: pd.DataFrame, value_cols: dict[str, str], title: str, xtitle: str,
+                      percent: bool = True) -> go.Figure:
+    """Dot plot: one row per game, one dot per source (model / Vegas / Kalshi), with a
+    connector showing how far apart the sources are."""
+    fig = go.Figure()
+    labels = df["label"].tolist()
+    vals = df[list(value_cols)]
+    lo, hi = vals.min(axis=1), vals.max(axis=1)
+    for y, a, b in zip(labels, lo, hi):
+        if pd.notna(a) and pd.notna(b):
+            fig.add_trace(go.Scatter(x=[a, b], y=[y, y], mode="lines", line=dict(color=GRID, width=6),
+                                     hoverinfo="skip", showlegend=False))
+    fmt = "%{x:.1%}" if percent else "%{x:+.1f}"
+    for (col, name), color in zip(value_cols.items(), (S1, S2, S3)):
+        fig.add_trace(go.Scatter(x=df[col], y=labels, mode="markers", name=name,
+                                 marker=dict(color=color, size=12, line=dict(color="#121211", width=2)),
+                                 hovertemplate="%{y}: " + fmt + "<extra>" + name + "</extra>"))
+    if percent:
+        fig.add_vline(x=0.5, line_color=MUTED, line_width=1, line_dash="dot")
+    fig = _layout(fig, title, height=90 + 42 * len(df), xaxis_title=xtitle, yaxis=dict(autorange="reversed"))
+    if percent:
+        fig.update_xaxes(tickformat=".0%", range=[0, 1])
+    return fig

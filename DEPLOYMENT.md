@@ -62,12 +62,13 @@ the refreshed DuckDB file, models and report back to the repo. Trigger it manual
 
 ## Betting lines and injuries
 
-Neither data source provides betting lines. Injuries are pulled from ESPN's public feed when
-reachable. Supply lines (and any injury overrides) as CSVs in `data/` (templates in `data/templates/`):
+Vegas lines (ESPN scoreboard odds), Kalshi prices and injuries are fetched automatically on each run.
+The hosts are `site.api.espn.com` and `api.elections.kalshi.com`, plus `api.the-odds-api.com` if
+`ODDS_API_KEY` is set. The CSVs below add historical lines or overrides (templates in `data/templates/`):
 
 | File | Columns | Used for |
 |---|---|---|
-| `lines.csv` | game_date, home, away, spread, total | historical closing lines (backtest ATS/O-U/ROI) and today's lines |
+| `lines.csv` | game_date, home, away, spread, total[, home_ml, away_ml] | historical closing lines (backtest ATS/O-U/ROI) and manual lines |
 | `prop_lines.csv` | game_date, player_name, stat, line | prop edges and over/under probabilities |
 | `injuries.csv` | player_name, team, status | players marked OUT/DOUBTFUL are removed from projected lineups |
 

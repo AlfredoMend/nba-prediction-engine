@@ -6,6 +6,7 @@ duckdb>=1.0
 nba_api>=1.10
 requests>=2.31
 python-dotenv>=1.0
+tzdata>=2024.1
 # Machine learning
 scikit-learn>=1.4
 lightgbm>=4.3

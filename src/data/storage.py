@@ -61,7 +61,12 @@ class Storage:
             if mode == "replace" or not self._exists(con, table):
                 con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM _df')
             else:
-                con.execute(f'INSERT INTO "{table}" BY NAME SELECT * FROM _df')
+                existing = {r[0] for r in con.execute(f'DESCRIBE "{table}"').fetchall()}
+                if set(df.columns) <= existing:
+                    con.execute(f'INSERT INTO "{table}" BY NAME SELECT * FROM _df')
+                else:  # schema grew (e.g. new market columns): union old and new rows
+                    con.execute(f'CREATE OR REPLACE TABLE "{table}" AS '
+                                f'SELECT * FROM "{table}" UNION ALL BY NAME SELECT * FROM _df')
             con.unregister("_df")
 
     def read(self, table: str) -> pd.DataFrame:

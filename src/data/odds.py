@@ -41,20 +41,26 @@ def load_prop_lines_csv() -> pd.DataFrame:
 
 
 def fetch_live_lines() -> pd.DataFrame:
-    """Consensus (median across books) spread & total for upcoming games."""
+    """Consensus (median across books) spread, total and moneylines for upcoming games."""
+    cols = ["game_date", "home", "away", "spread", "total", "home_ml", "away_ml", "book"]
     if not config.ODDS_API_KEY:
-        return pd.DataFrame(columns=["game_date", "home", "away", "spread", "total"])
+        return pd.DataFrame(columns=cols)
     url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
-    params = {"apiKey": config.ODDS_API_KEY, "regions": "us", "markets": "spreads,totals",
+    params = {"apiKey": config.ODDS_API_KEY, "regions": "us", "markets": "h2h,spreads,totals",
               "oddsFormat": "american"}
-    resp = requests.get(url, params=params, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        events = resp.json()
+    except Exception as exc:
+        log.warning("The Odds API unavailable (%s)", exc)
+        return pd.DataFrame(columns=cols)
     rows = []
-    for ev in resp.json():
+    for ev in events:
         hid, aid = NAME_TO_ID.get(ev["home_team"]), NAME_TO_ID.get(ev["away_team"])
         if not hid or not aid:
             continue
-        spreads, totals = [], []
+        spreads, totals, ml_home, ml_away = [], [], [], []
         for bk in ev.get("bookmakers", []):
             for mk in bk.get("markets", []):
                 for oc in mk["outcomes"]:
@@ -62,11 +68,14 @@ def fetch_live_lines() -> pd.DataFrame:
                         spreads.append(oc["point"])
                     elif mk["key"] == "totals" and oc["name"] == "Over":
                         totals.append(oc["point"])
+                    elif mk["key"] == "h2h":
+                        (ml_home if oc["name"] == ev["home_team"] else ml_away).append(oc["price"])
+        med = lambda v: float(pd.Series(v).median()) if v else None  # noqa: E731
         rows.append({
             # commence_time is UTC; convert to US/Eastern calendar date
-            "game_date": pd.Timestamp(ev["commence_time"]).tz_convert("US/Eastern").tz_localize(None).normalize(),
+            "game_date": pd.Timestamp(ev["commence_time"]).tz_convert("America/New_York").tz_localize(None).normalize(),
             "home": TEAMS[hid][0], "away": TEAMS[aid][0],
-            "spread": float(pd.Series(spreads).median()) if spreads else None,
-            "total": float(pd.Series(totals).median()) if totals else None,
+            "spread": med(spreads), "total": med(totals), "home_ml": med(ml_home), "away_ml": med(ml_away),
+            "book": "consensus",
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=cols)
