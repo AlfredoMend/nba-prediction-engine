@@ -54,6 +54,11 @@ def run_backtest(fs: FeatureSet, lines: pd.DataFrame, store: Storage, data_sourc
     store.write("bt_games", games)
     if not props.empty:
         store.write("bt_props", props)
+        # calibrate prop over/under probabilities on this season's walk-forward predictions
+        from src.models.prop_edges import PropCalibrator
+        calibrator = PropCalibrator().fit(props)
+        calibrator.save()
+        report["prop_calibration"] = calibrator.report
         report["plots"] = [str(Path(p).relative_to(config.ROOT)) for p in plot_all(games, props, report)]
     config.BACKTEST_REPORT.write_text(json.dumps(report, indent=2, default=str))
     log.info("backtest report -> %s (%.0fs total)", config.BACKTEST_REPORT, time.time() - t0)

@@ -24,6 +24,7 @@ jobs:
     env:
       NBA_DATA_SOURCE: sportsdataverse
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
+      ODDS_PROP_BOOKMAKERS: ${{ vars.ODDS_PROP_BOOKMAKERS }}
     steps:
       - uses: actions/checkout@v4
 

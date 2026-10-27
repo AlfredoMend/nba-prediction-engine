@@ -68,6 +68,30 @@ def with_market_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def styled(table: pd.DataFrame, fmt: dict[str, str]):
+    """Show missing values as '—' instead of 'None'. Columns with gaps are rendered as
+    formatted text; complete columns stay numeric (and sortable) with the same format."""
+    out = table.copy()
+    numeric_fmt = {}
+    for c in out.columns:
+        f = fmt.get(c)
+        has_gaps = out[c].isna().any() or (not pd.api.types.is_numeric_dtype(out[c])
+                                           and (out[c].astype(str).str.strip() == "").any())
+        if f and has_gaps:
+            out[c] = [("—" if pd.isna(v) else f.format(v)) for v in out[c]]
+        elif f:
+            numeric_fmt[c] = f
+        elif not pd.api.types.is_numeric_dtype(out[c]):
+            out[c] = out[c].map(lambda v: "—" if v is None or (isinstance(v, float) and pd.isna(v)) or v == "" else v)
+    return out.style.format(numeric_fmt) if numeric_fmt else out
+
+
+def drop_empty(table: pd.DataFrame, cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    """Hide columns with no data at all (instead of a column full of 'None')."""
+    empty = [c for c in cols if c in table and (table[c].isna().all() or (table[c].astype(str).str.strip() == "").all())]
+    return table.drop(columns=empty), empty
+
+
 def fmt_spread(team: str, spread: float) -> str:
     return "n/a" if pd.isna(spread) else f"{team} {spread:+.1f}"
 
@@ -77,7 +101,8 @@ def fmt_spread(team: str, spread: float) -> str:
 # --------------------------------------------------------------------------- #
 meta = load_meta()
 st.sidebar.title("🏀 NBA Prediction Engine")
-page = st.sidebar.radio("View", ["Today's Games", "Vegas vs Kalshi", "Player Props Hub", "Lineup & Injury Simulator",
+page = st.sidebar.radio("View", ["Today's Games", "Vegas vs Kalshi", "Player Props Hub", "Prop Bet Finder",
+                                 "Lineup & Injury Simulator",
                                  "2025-26 Model Accuracy"])
 st.sidebar.caption(f"Season {config.CURRENT_SEASON}")
 if meta:
@@ -149,21 +174,21 @@ def page_games():
         "O/U pick": g["ou_pick"] + np.where(g["ou_value"], " ⭐", ""),
         "O/U %": g["ou_prob"] * 100,
     })
-    st.dataframe(table, hide_index=True, use_container_width=True, column_config={
-        "Home win %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100),
-        "Spread edge": st.column_config.NumberColumn(format="%.1f pts"),
-        "Cover %": st.column_config.NumberColumn(format="%.1f%%"),
-        "Model total": st.column_config.NumberColumn(format="%.1f"),
-        "Vegas total": st.column_config.NumberColumn(format="%.1f"),
-        "Kalshi total": st.column_config.NumberColumn(format="%.1f"),
-        "O/U %": st.column_config.NumberColumn(format="%.1f%%"),
-    })
+    table["Vegas spread"] = table["Vegas spread"].replace("n/a", None)
+    table["Kalshi spread"] = table["Kalshi spread"].replace("n/a", None)
+    table, hidden = drop_empty(table, ["Vegas spread", "Kalshi spread", "Spread edge", "ATS pick", "Cover %",
+                                       "Vegas total", "Kalshi total", "O/U pick", "O/U %"])
+    st.dataframe(styled(table, {"Spread edge": "{:.1f} pts", "Cover %": "{:.1f}%", "Model total": "{:.1f}",
+                                "Vegas total": "{:.1f}", "Kalshi total": "{:.1f}", "O/U %": "{:.1f}%"}),
+                 hide_index=True, use_container_width=True, column_config={
+                     "Home win %": st.column_config.ProgressColumn(format="%.0f%%", min_value=0, max_value=100)})
     st.caption("⭐ = value play against the Vegas line. Spreads are shown from the home team's perspective. "
                "Probabilities come from 10,000 Monte Carlo simulations per game. Kalshi spread/total = the line where "
                "Kalshi's price ladder crosses 50%.")
-    if g["spread"].isna().all():
-        st.info("No Vegas lines loaded yet, so picks and edges are blank. They are fetched from ESPN on each daily "
-                "run (or set `ODDS_API_KEY`, or add `data/lines.csv`).")
+    if hidden:
+        st.info(f"Hidden until market data arrives: {', '.join(hidden)}. Vegas lines (ESPN) and Kalshi prices are "
+                f"fetched on each daily run; last run found {meta.get('vegas_games', 0)} Vegas lines and "
+                f"{meta.get('kalshi_games', 0)} Kalshi games.")
 
     st.subheader("Game detail")
     if g.empty:
@@ -247,16 +272,10 @@ def page_markets():
         "Kalshi bet": [t + (" ⭐" if v else "") for t, v in zip(ev_txt, value)],
         "EV / $1": g["kalshi_best_ev"] * 100, "Kalshi volume": g["kalshi_volume"],
     })
-    pct = st.column_config.NumberColumn(format="%.1f%%")
-    st.dataframe(table, hide_index=True, use_container_width=True, column_config={
-        "Model %": pct, "Vegas %": pct, "Kalshi %": pct,
-        "Vegas–Kalshi (pp)": st.column_config.NumberColumn(format="%+.1f"),
-        "Model total": st.column_config.NumberColumn(format="%.1f"),
-        "Vegas total": st.column_config.NumberColumn(format="%.1f"),
-        "Kalshi total": st.column_config.NumberColumn(format="%.1f"),
-        "EV / $1": st.column_config.NumberColumn(format="%+.1f¢"),
-        "Kalshi volume": st.column_config.NumberColumn(format="%,.0f"),
-    })
+    st.dataframe(styled(table, {"Model %": "{:.1f}%", "Vegas %": "{:.1f}%", "Kalshi %": "{:.1f}%",
+                                "Vegas–Kalshi (pp)": "{:+.1f}", "Model total": "{:.1f}", "Vegas total": "{:.1f}",
+                                "Kalshi total": "{:.1f}", "EV / $1": "{:+.1f}¢", "Kalshi volume": "{:,.0f}"}),
+                 hide_index=True, use_container_width=True)
     book = ", ".join(sorted({b for b in g["book"].dropna().astype(str) if b}))
     st.caption(
         f"Vegas: {book or 'n/a'} moneylines with the bookmaker margin removed. Kalshi: midpoint of the yes bid/ask "
@@ -293,27 +312,110 @@ def page_props():
         p = p[p[f"{stat}_line"].notna()]
     p = p.sort_values(f"{stat}_p50", ascending=False)
 
-    edge = p[f"{stat}_p50"] - p[f"{stat}_line"]
-    over = p[f"{stat}_over_prob"] if f"{stat}_over_prob" in p else pd.Series(np.nan, index=p.index)
+    def col(name, default=np.nan):
+        return p[f"{stat}_{name}"] if f"{stat}_{name}" in p else pd.Series(default, index=p.index)
+    ev = col("ev")
     table = pd.DataFrame({
         "Player": p["player_name"], "Team": p["team"], "Opp": p["opp"],
         "Proj min": p["proj_min"], "Low (p10)": p[f"{stat}_p10"], "Projection": p[f"{stat}_p50"],
-        "High (p90)": p[f"{stat}_p90"], "Last-10 avg": p[f"{stat}_l10"], "Line": p[f"{stat}_line"],
-        "Edge": edge, "Over %": over * 100,
-        "Lean": np.where(edge.isna(), "", np.where(over >= VALUE_PROB, "Over ⭐",
-                                                   np.where(over <= 1 - VALUE_PROB, "Under ⭐", ""))),
+        "High (p90)": p[f"{stat}_p90"], "Last-10 avg": p[f"{stat}_l10"],
+        "Book": col("book", ""), "Line": col("line"), "Over odds": col("over_odds"), "Under odds": col("under_odds"),
+        "Model over %": col("over_prob") * 100, "Market over %": col("market_over_prob") * 100,
+        "Bet": [f"{sd} {ln:g} ⭐" if pd.notna(e) and e >= PROP_MIN_EV else "" for sd, ln, e in
+                zip(col("side", ""), col("line"), ev)],
+        "EV %": ev * 100,
     })
-    st.dataframe(table, hide_index=True, use_container_width=True, height=460, column_config={
-        c: st.column_config.NumberColumn(format="%.1f")
-        for c in ["Proj min", "Low (p10)", "Projection", "High (p90)", "Last-10 avg", "Line", "Edge"]
-    } | {"Over %": st.column_config.NumberColumn(format="%.0f%%")})
+    table, hidden = drop_empty(table, ["Book", "Line", "Over odds", "Under odds", "Model over %", "Market over %",
+                                       "Bet", "EV %"])
+    fmt = {c: "{:.1f}" for c in ["Proj min", "Low (p10)", "Projection", "High (p90)", "Last-10 avg", "Line"]}
+    fmt |= {"Over odds": "{:+.0f}", "Under odds": "{:+.0f}", "Model over %": "{:.0f}%", "Market over %": "{:.0f}%",
+            "EV %": "{:+.1f}%"}
+    st.dataframe(styled(table, fmt), hide_index=True, use_container_width=True, height=460)
     st.caption(f"{len(p)} players. Projection = median of the quantile model; Low/High = 80% interval. "
-               "⭐ = model over/under probability ≥ 55%.")
+               "Model over % is calibrated on the 2025-26 backtest; Market over % is the book's no-vig price. "
+               f"⭐ = expected value ≥ {PROP_MIN_EV:.0%} per $1. See **Prop Bet Finder** for every line ranked by value.")
+    if hidden:
+        st.info("No prop lines loaded for this date, so book columns are hidden. Add lines (e.g. from Novig) to "
+                "`data/prop_lines.csv`, or set `ODDS_API_KEY` + `ODDS_PROP_BOOKMAKERS`.")
 
     if not p.empty:
         who = st.selectbox("Player detail", p["player_id"], format_func=lambda i: p.loc[p["player_id"] == i, "player_name"].iloc[0])
         row = p[p["player_id"] == who].iloc[0]
         st.plotly_chart(charts.prop_ranges(row, config.PROP_STATS), use_container_width=True)
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Prop bet finder
+# --------------------------------------------------------------------------- #
+PROP_MIN_EV = 0.03
+
+
+def page_prop_bets():
+    bets = load_table("prop_bets")
+    st.markdown("Every prop line we have prices for, ranked by the model's **expected value** against that price. "
+                "A projection above the line is not enough by itself: the model's chance of going over has to "
+                "beat what the odds imply.")
+    if bets.empty:
+        st.info("No prop lines loaded yet. To compare against Novig (or any book):\n\n"
+                "1. Copy the lines into `data/prop_lines.csv` with columns "
+                "`game_date,player_name,stat,line,over_odds,under_odds,book` "
+                "(example: `2026-10-27,Jayson Tatum,pts,23.5,-105,-105,novig`), commit it, and run the daily workflow; or\n"
+                "2. Add an `ODDS_API_KEY` secret and an `ODDS_PROP_BOOKMAKERS` variable (e.g. `novig,draftkings`) "
+                "in the repo settings so the daily run pulls them automatically.")
+        return
+    bets["game_date"] = pd.to_datetime(bets["game_date"])
+    c = st.columns([1, 1, 1, 1, 2])
+    day = c[0].selectbox("Date", sorted(bets["game_date"].dt.date.unique()), key="pb_day")
+    stats = c[1].multiselect("Stats", config.PROP_STATS, default=[], format_func=STAT_LABELS.get)
+    books = c[2].multiselect("Books", sorted(bets["book"].dropna().unique()), default=[])
+    min_ev = c[3].number_input("Min EV %", value=float(PROP_MIN_EV * 100), step=1.0) / 100
+    search = c[4].text_input("Search player", "", key="pb_search")
+    b = bets[(bets["game_date"].dt.date == day) & (bets["best_ev"] >= min_ev)]
+    if stats:
+        b = b[b["stat"].isin(stats)]
+    if books:
+        b = b[b["book"].isin(books)]
+    if search:
+        b = b[b["player_name"].str.contains(search, case=False, na=False)]
+
+    k = st.columns(3)
+    k[0].metric("Lines compared", int((bets["game_date"].dt.date == day).sum()))
+    k[1].metric("Bets above threshold", len(b))
+    k[2].metric("Best EV", f"{b['best_ev'].max():+.1%}" if len(b) else "n/a")
+
+    table = pd.DataFrame({
+        "Player": b["player_name"], "Team": b["team"], "Opp": b["opp"], "Stat": b["stat"].map(STAT_LABELS),
+        "Book": b["book"], "Bet": b["best_side"] + " " + b["line"].map("{:g}".format),
+        "Odds": b["best_odds"], "Projection": b["p50"], "80% range": b["p10"].round(0).astype(int).astype(str) + "–"
+        + b["p90"].round(0).astype(int).astype(str),
+        "Model %": np.where(b["best_side"] == "Over", b["model_over_prob"], 1 - b["model_over_prob"]) * 100,
+        "Market %": np.where(b["best_side"] == "Over", b["market_over_prob"], 1 - b["market_over_prob"]) * 100,
+        "EV %": b["best_ev"] * 100, "Stake (% bankroll)": b["kelly_stake"] * 100,
+    })
+    st.dataframe(table, hide_index=True, use_container_width=True, height=min(480, 40 + 35 * max(len(table), 1)),
+                 column_config={
+        "Odds": st.column_config.NumberColumn(format="%+d"),
+        "Projection": st.column_config.NumberColumn(format="%.1f"),
+        "Model %": st.column_config.NumberColumn(format="%.1f%%"),
+        "Market %": st.column_config.NumberColumn(format="%.1f%%"),
+        "EV %": st.column_config.NumberColumn(format="%+.1f%%"),
+        "Stake (% bankroll)": st.column_config.NumberColumn(format="%.1f%%"),
+    })
+    st.caption("Model % = calibrated chance the bet wins; Market % = the book's no-vig implied chance. "
+               "EV = expected profit per $1 staked. Stake = quarter-Kelly sizing guide, capped by your own judgement. "
+               "Prop lines are not yet backtested against real closing prices, so treat edges as leads to check, "
+               "not guarantees.")
+
+    if len(b):
+        r = b.iloc[0]
+        p_side = r.model_over_prob if r.best_side == "Over" else 1 - r.model_over_prob
+        m_side = r.market_over_prob if r.best_side == "Over" else 1 - r.market_over_prob
+        st.markdown(
+            f"**How to read the top row:** the model projects {r.player_name} for **{r.p50:.1f}** "
+            f"{STAT_LABELS[r.stat].lower()} (80% range {r.p10:.0f}–{r.p90:.0f}) against a {r.book} line of "
+            f"**{r.line:g}**. It gives the {r.best_side.lower()} a **{p_side:.0%}** chance; the {int(r.best_odds):+d} "
+            f"price implies {m_side:.0%} after removing the vig. On average, a \\$100 bet is worth about "
+            f"**{r.best_ev * 100:+.0f} dollars**.")
 
 
 # --------------------------------------------------------------------------- #
@@ -466,5 +568,5 @@ def page_accuracy():
                            for c in ["Model MAE", "L10 MAE", "Coverage %", "Avg interval width"]})
 
 
-{"Today's Games": page_games, "Vegas vs Kalshi": page_markets, "Player Props Hub": page_props, "Lineup & Injury Simulator": page_simulator,
+{"Today's Games": page_games, "Vegas vs Kalshi": page_markets, "Player Props Hub": page_props, "Prop Bet Finder": page_prop_bets, "Lineup & Injury Simulator": page_simulator,
  "2025-26 Model Accuracy": page_accuracy}[page]()

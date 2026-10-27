@@ -167,5 +167,63 @@
     "assets/margin_residuals.png",
     "assets/props_mae.png",
     "assets/props_coverage.png"
-  ]
+  ],
+  "prop_calibration": {
+    "pts": {
+      "brier_raw": 0.17057725969984758,
+      "brier_calibrated": 0.16930337042861063,
+      "mean_raw": 0.5157663868284911,
+      "mean_calibrated": 0.5016818181418573,
+      "observed_rate": 0.49313464608834484,
+      "n": 65765
+    },
+    "reb": {
+      "brier_raw": 0.16717459465977566,
+      "brier_calibrated": 0.1667084668272277,
+      "mean_raw": 0.5186552490502715,
+      "mean_calibrated": 0.5100417274903492,
+      "observed_rate": 0.4973770242530221,
+      "n": 65765
+    },
+    "ast": {
+      "brier_raw": 0.18230274611126362,
+      "brier_calibrated": 0.18100649308271766,
+      "mean_raw": 0.5017632245897409,
+      "mean_calibrated": 0.4883044288084386,
+      "observed_rate": 0.47564814110849235,
+      "n": 65765
+    },
+    "fg3m": {
+      "brier_raw": 0.17730085979075186,
+      "brier_calibrated": 0.17509994908422308,
+      "mean_raw": 0.4312622970053498,
+      "mean_calibrated": 0.4119879852171392,
+      "observed_rate": 0.4011708355508249,
+      "n": 65765
+    },
+    "stl": {
+      "brier_raw": 0.21504243532389014,
+      "brier_calibrated": 0.2108523738561009,
+      "mean_raw": 0.4327610880808247,
+      "mean_calibrated": 0.4144028907792329,
+      "observed_rate": 0.4049722496768798,
+      "n": 65765
+    },
+    "blk": {
+      "brier_raw": 0.18916283867030856,
+      "brier_calibrated": 0.1861297136175562,
+      "mean_raw": 0.31804460441365157,
+      "mean_calibrated": 0.2934928436494845,
+      "observed_rate": 0.28805595681593554,
+      "n": 65765
+    },
+    "pra": {
+      "brier_raw": 0.16466596712457815,
+      "brier_calibrated": 0.16426251862823552,
+      "mean_raw": 0.5145220549564271,
+      "mean_calibrated": 0.505794457344953,
+      "observed_rate": 0.4943967155781951,
+      "n": 65765
+    }
+  }
 }

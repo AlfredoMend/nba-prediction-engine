@@ -1,4 +1,4 @@
-game_date,player_name,stat,line
-2026-10-26,Example Player,pts,24.5
-2026-10-26,Example Player,reb,7.5
-2026-10-26,Example Player,pra,38.5
+game_date,player_name,stat,line,over_odds,under_odds,book
+2026-10-27,Jayson Tatum,pts,23.5,-105,-105,novig
+2026-10-27,Jayson Tatum,reb,8.5,+110,-120,novig
+2026-10-27,Jayson Tatum,pra,38.5,-102,-108,novig

@@ -12,11 +12,12 @@ import numpy as np
 import pandas as pd
 
 from src import config
-from src.data import markets, odds
+from src.data import markets, odds, prop_odds
 from src.data.build import FeatureSet, build_features
 from src.data.storage import Storage
 from src.models.game_model import GameModel
 from src.models.monte_carlo import simulate_games
+from src.models.prop_edges import PropCalibrator, evaluate_prop_bets
 from src.models.props_model import PropsModel
 
 log = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ def ingest(store: Storage, source: str, as_of: date, full_refresh: bool = False)
         store.write("players", players)
         store.write("schedule", sched)
         refresh_markets(store, sched, as_of)
-        store.write("prop_lines", odds.load_prop_lines_csv())
+        store.write("prop_lines", prop_odds.load_prop_lines(pg[["player_id", "player_name"]], sched))
         store.write("injuries", load_injuries(pg))
         store.set_meta(latest_game=sportsdataverse.data_freshness(tg))
     elif source == "nba_api":
@@ -66,7 +67,7 @@ def ingest(store: Storage, source: str, as_of: date, full_refresh: bool = False)
         sched = nba_fetch.fetch_schedule(as_of, days=3)
         store.write("schedule", sched)
         refresh_markets(store, sched, as_of)
-        store.write("prop_lines", odds.load_prop_lines_csv())
+        store.write("prop_lines", prop_odds.load_prop_lines(pg[["player_id", "player_name"]], sched))
         store.write("injuries", _load_injuries(pg))
     else:
         raise ValueError(f"unknown data source {source!r}")
@@ -141,10 +142,12 @@ def train_and_predict(fs: FeatureSet, store: Storage) -> dict:
     props = props_model.predict(up_players)
     props["listed_out"] = up_players["listed_out"].values
     props["base_pra"] = up_players["base_pra"].values
-    props = _attach_prop_lines(props, store.read("prop_lines"))
     teams = fs.team_feats[["team_id", "team"]].drop_duplicates("team_id").set_index("team_id")["team"]
     props["team"] = props["team_id"].map(teams)
     props["opp"] = props["opp_id"].map(teams)
+    bets = evaluate_prop_bets(props[props["listed_out"] == 0], store.read("prop_lines"), PropCalibrator.load())
+    props = _attach_prop_lines(props, bets)
+    store.write("prop_bets", bets)
 
     store.write("pred_games", preds)
     store.write("pred_props", props)
@@ -159,21 +162,20 @@ def train_and_predict(fs: FeatureSet, store: Storage) -> dict:
     return {"games": len(preds), "props": len(props)}
 
 
-def _attach_prop_lines(props: pd.DataFrame, lines: pd.DataFrame) -> pd.DataFrame:
-    """Merge any available prop lines and compute model over-probabilities."""
-    for s in config.PROP_STATS:
-        props[f"{s}_line"] = np.nan
-    if lines is None or lines.empty:
+def _attach_prop_lines(props: pd.DataFrame, bets: pd.DataFrame) -> pd.DataFrame:
+    """Per stat, add the best-value line on offer (book, line, odds, model vs market
+    over-probability, EV) as wide columns for the Props Hub."""
+    fields = {"line": "line", "book": "book", "over_odds": "over_odds", "under_odds": "under_odds",
+              "model_over_prob": "over_prob", "market_over_prob": "market_over_prob", "best_ev": "ev",
+              "best_side": "side"}
+    for st in config.PROP_STATS:
+        for f in fields.values():
+            props[f"{st}_{f}"] = "" if f in ("book", "side") else np.nan
+    if bets is None or bets.empty:
         return props
-    lines = lines.assign(game_date=pd.to_datetime(lines["game_date"]))
-    key = "player_id" if "player_id" in lines and lines["player_id"].notna().all() else "player_name"
-    wide = lines.pivot_table(index=["game_date", key], columns="stat", values="line", aggfunc="last")
-    wide.columns = [f"{c}_line" for c in wide.columns]
-    props = props.drop(columns=[c for c in wide.columns if c in props]).merge(
-        wide.reset_index(), on=["game_date", key], how="left")
-    for s in config.PROP_STATS:
-        if f"{s}_line" not in props:
-            props[f"{s}_line"] = np.nan
-        props[f"{s}_over_prob"] = PropsModel.over_probability(props[f"{s}_p10"], props[f"{s}_p50"],
-                                                              props[f"{s}_p90"], props[f"{s}_line"])
+    best = bets.sort_values("best_ev", ascending=False).drop_duplicates(["game_date", "player_id", "stat"])
+    for st, grp in best.groupby("stat"):
+        wide = grp[["game_date", "player_id", *fields]].rename(columns={k: f"{st}_{v}" for k, v in fields.items()})
+        props = props.drop(columns=[c for c in wide.columns if c not in ("game_date", "player_id")]).merge(
+            wide, on=["game_date", "player_id"], how="left")
     return props

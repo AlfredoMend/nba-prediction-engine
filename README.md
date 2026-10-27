@@ -9,7 +9,7 @@ Streamlit UI.
 
 ```
 main.py                     CLI: --update-and-predict, --backtest
-app.py                      Streamlit UI (5 views)
+app.py                      Streamlit UI (6 views)
 src/config.py               paths, seasons, feature windows, betting conventions
 src/pipeline.py             ingest -> features -> train -> predict -> persist
 src/data/
@@ -18,6 +18,7 @@ src/data/
   nba_fetch.py              alternative source: stats.nba.com (LeagueGameLog, PlayerIndex, ScoreboardV3/V2)
   synthetic.py              offline simulated league with the same schema (demo/CI only)
   odds.py                   lines from CSV or The Odds API (consensus spread/total/moneyline)
+  prop_odds.py              player prop lines + prices (CSV, or The Odds API for chosen books)
   markets.py                free Vegas lines (ESPN scoreboard odds) + Kalshi prices, no-vig maths, Kalshi EV
   storage.py                DuckDB cache
   features.py               team ratings + EWMA(5/10/20), rest, B2B, travel, venue splits
@@ -29,6 +30,7 @@ src/models/
   monte_carlo.py            correlated score simulation -> win/cover/over probabilities
   props_model.py            p10/p50/p90 quantile models for PTS/REB/AST/3PM/STL/BLK/PRA
   simulator.py              lineup what-if engine used by the UI
+  prop_edges.py             prop bets: calibrated model probability vs book price, EV, Kelly sizing
 src/backtest/
   walk_forward.py           chronological walk-forward on 2025-26
   metrics.py                MAE/RMSE, ATS, O/U, ROI, Brier, calibration, interval coverage
@@ -98,6 +100,29 @@ side on Kalshi at the current ask, after Kalshi's taker fee (`ceil(0.07 x P x (1
 contract). Each run appends a timestamped snapshot to the `line_history` table, so closing lines
 build up for a future backtest against both markets.
 
+## Player props vs a book (e.g. Novig)
+
+The **Prop Bet Finder** view ranks every prop line you have a price for by expected value:
+
+1. The model's P(over) comes from its p10/p50/p90 projection. An isotonic calibrator fitted on
+   the 2025-26 walk-forward backtest adjusts it (the raw probabilities were about 2 points too
+   high on overs; calibration lowered the out-of-sample Brier score for every stat).
+2. The book's price becomes a no-vig probability.
+3. EV per $1 = p x profit_if_win - (1 - p). The side with the higher EV is shown, flagged at
+   EV >= 3%, with a quarter-Kelly stake as a sizing guide.
+
+Example: if the model's median is 26 for Jayson Tatum and the book has Over 23.5 at -105, the
+over is a bet only if the model's calibrated chance of 24+ points is above about 51%, the
+break-even rate at -105.
+
+**Getting Novig lines in.** Novig has no public API; its odds are resold by third-party feeds.
+Two options:
+- Paste lines into `data/prop_lines.csv` (`game_date,player_name,stat,line,over_odds,under_odds,book`;
+  stats: pts, reb, ast, fg3m, stl, blk, pra) and commit. The next run picks them up.
+- Set the `ODDS_API_KEY` secret and an `ODDS_PROP_BOOKMAKERS` repository variable (e.g.
+  `novig,draftkings,fanduel`). The run log lists which books actually returned props, so you can
+  see whether your plan includes Novig.
+
 ## Limitations
 
 - Data freshness follows sportsdataverse, which usually publishes a night's games within about
@@ -114,3 +139,5 @@ build up for a future backtest against both markets.
 - The ESPN odds and Kalshi parsers were built from the documented response formats and tested
   against sample payloads. Both fail soft: an unreachable host or changed payload logs a warning
   and leaves those columns blank. Kalshi does not list every game, and markets may open late.
+- Prop edges have not been backtested against real historical prop prices. The calibration
+  check uses lines placed around the model's own projection, not real book lines.

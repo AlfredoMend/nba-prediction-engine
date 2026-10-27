@@ -21,7 +21,7 @@ from src.data.teams import NAME_TO_ID, TEAMS
 log = logging.getLogger(__name__)
 
 LINES_CSV = config.DATA_DIR / "lines.csv"            # game_date,home,away,spread,total
-PROP_LINES_CSV = config.DATA_DIR / "prop_lines.csv"  # game_date,player_name,stat,line
+PROP_LINES_CSV = config.DATA_DIR / "prop_lines.csv"  # see prop_odds.py for the format
 
 
 def load_lines_csv() -> pd.DataFrame:
