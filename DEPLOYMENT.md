@@ -32,9 +32,30 @@ docker run --rm -p 8501:8501 -v "$PWD/data:/app/data" -v "$PWD/models_store:/app
 ## 3. Streamlit Community Cloud
 
 1. Push the repo (including `data/nba.duckdb`, `models_store/`, `backtest_2025_2026_results.json`) to GitHub.
-2. On share.streamlit.io choose **New app**, select the repo, main file `app.py`, Python 3.11.
+2. On share.streamlit.io choose **New app**, select the repo, main file `app.py`, **Python 3.12** (must match the daily workflow so saved models load).
 3. Add `ODDS_API_KEY` under **Secrets** if you use live odds (only needed by the pipeline, not the UI).
 4. The daily GitHub Action commits refreshed data; Streamlit Cloud redeploys on each push.
+
+### Refresh buttons on the site
+
+The sidebar has two buttons:
+
+- **⚡ Quick refresh** (seconds): pulls the latest injury report, Vegas odds, Kalshi prices and
+  prop lines, then re-runs the current models with the updated lineups. No setup needed.
+  Changes last until the app next redeploys, which happens anyway when the daily run commits
+  fresh data.
+- **🔄 Full rerun** (about 10 minutes): starts the GitHub workflow (new box scores + retrain).
+  The site redeploys with the new data when it finishes. To enable it, add these under the
+  app's **Settings → Secrets** on share.streamlit.io:
+
+```toml
+GITHUB_TOKEN = "github_pat_..."   # fine-grained token: only this repo, permission "Actions: Read and write"
+REFRESH_PASSWORD = "pick-one"      # optional: the site is public, so this stops strangers pressing the buttons
+```
+
+Create the token at GitHub → Settings → Developer settings → Fine-grained tokens: choose
+*Only select repositories → nba-prediction-engine*, then *Repository permissions → Actions →
+Read and write*. Runs are limited to one every 15 minutes.
 
 ## 4. Render
 

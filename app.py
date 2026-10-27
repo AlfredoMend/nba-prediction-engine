@@ -111,10 +111,79 @@ if meta:
                        f"Latest completed game: {meta.get('latest_game', '?')}  \n"
                        f"Models trained through: {meta.get('trained_through', '?')}  \n"
                        f"Last run: {meta.get('last_run', meta.get('predicted_at', '?'))}")
+
+
+def secret(name: str, default: str = "") -> str:
+    try:
+        return str(st.secrets.get(name, default))
+    except Exception:  # no secrets file configured
+        return default
+
+
+def refresh_panel():
+    """Sidebar: quick in-app re-price, and a full GitHub Actions rerun."""
+    from src.ui import github_actions as gha
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Refresh")
+    if meta.get("quick_refreshed_at"):
+        st.sidebar.caption(f"Last quick refresh: {meta['quick_refreshed_at'].replace('T', ' ')}")
+    password = secret("REFRESH_PASSWORD")
+    entered = st.sidebar.text_input("Refresh password", type="password") if password else ""
+    allowed = not password or entered == password
+
+    if st.sidebar.button("⚡ Quick refresh", use_container_width=True, disabled=not allowed,
+                         help="About 30 seconds: latest injury report, Vegas odds, Kalshi prices and prop lines, "
+                              "re-run through the current models. Does not add new games or retrain."):
+        from src.pipeline import quick_refresh
+        with st.sidebar.status("Re-pricing today's slate...", expanded=True) as box:
+            try:
+                res = quick_refresh(Storage())
+            except Exception as exc:
+                box.update(label="Quick refresh failed", state="error")
+                st.sidebar.error(f"{type(exc).__name__}: {exc}")
+                return
+            box.update(label="Updated", state="complete")
+        st.session_state["refresh_result"] = res
+        st.cache_data.clear()
+        st.rerun()
+    res = st.session_state.pop("refresh_result", None)
+    if res:
+        if res.get("note"):
+            st.sidebar.info(res["note"])
+        else:
+            lines = [f"{res['games']} games re-priced; {res['out_players']} rotation players out ({res['injury_source']})."]
+            lines += [f"{m}: {a:.0%} → {b:.0%}" for m, a, b in res["changes"]] or ["No win probability moved 2+ points."]
+            st.sidebar.success("  \n".join(lines))
+
+    token, repo = secret("GITHUB_TOKEN"), secret("GITHUB_REPO", "AlfredoMend/nba-prediction-engine")
+    if not token:
+        st.sidebar.caption("Full rerun button: add `GITHUB_TOKEN` to the app's secrets to enable it.")
+        return
+    try:
+        run = gha.latest_run(token, repo)
+    except Exception as exc:
+        st.sidebar.caption(f"Could not reach GitHub ({exc.__class__.__name__}).")
+        return
+    ok, why = gha.can_trigger(run)
+    if st.sidebar.button("🔄 Full rerun (new games + retrain)", use_container_width=True, disabled=not (ok and allowed),
+                         help="Starts the GitHub workflow: downloads the latest box scores, retrains, re-predicts. "
+                              "Takes about 10 minutes; the site updates when it finishes."):
+        try:
+            gha.trigger_run(token, repo)
+            st.sidebar.success("Started. The site updates automatically in about 10 minutes.")
+        except Exception as exc:
+            st.sidebar.error(str(exc))
+    if run:
+        state = run["conclusion"] or run["status"]
+        st.sidebar.caption(f"Last full run: [{state}]({run['url']}), {run['minutes_ago']:.0f} min ago. {why}")
+
+
 if st.sidebar.button("Reload data"):
     st.cache_data.clear()
     st.cache_resource.clear()
     st.rerun()
+refresh_panel()
 
 if not meta:
     st.error("No data yet. Run `python main.py --update-and-predict` first.")

@@ -15,6 +15,7 @@ from src import config
 from src.data import markets, odds, prop_odds
 from src.data.build import FeatureSet, build_features
 from src.data.storage import Storage
+from src.data.teams import TEAMS
 from src.models.game_model import GameModel
 from src.models.monte_carlo import simulate_games
 from src.models.prop_edges import PropCalibrator, evaluate_prop_bets
@@ -128,8 +129,18 @@ def train_and_predict(fs: FeatureSet, store: Storage) -> dict:
     props_model = PropsModel().fit(fs.players)
     game_model.save()
     props_model.save()
+    store.write("feature_importance", game_model.feature_importance())
+    store.set_meta(trained_through=game_model.trained_through, sigma_home=game_model.sigma_home,
+                   sigma_away=game_model.sigma_away, rho=game_model.rho)
+    return publish_predictions(store, game_model, props_model, fs.games[fs.games["is_upcoming"] == 1],
+                               fs.players[fs.players["is_upcoming"] == 1])
 
-    upcoming = fs.games[fs.games["is_upcoming"] == 1]
+
+def publish_predictions(store: Storage, game_model: GameModel, props_model: PropsModel,
+                        upcoming: pd.DataFrame, up_players: pd.DataFrame) -> dict:
+    """Predict upcoming games and props from feature rows, attach market prices and
+    prop edges, and write everything the UI reads. Shared by the daily run and the
+    in-app quick refresh."""
     preds = markets.attach_markets(game_model.predict(upcoming), store.read("lines"), store.read("kalshi"))
     preds = simulate_games(preds, game_model.sigma_home, game_model.sigma_away, game_model.rho)
     preds = markets.add_kalshi_value(preds)
@@ -138,28 +149,78 @@ def train_and_predict(fs: FeatureSet, store: Storage) -> dict:
     preds["model_version"] = game_model.trained_through
     preds["predicted_at"] = datetime.now().isoformat(timespec="seconds")
 
-    up_players = fs.players[fs.players["is_upcoming"] == 1]
     props = props_model.predict(up_players)
     props["listed_out"] = up_players["listed_out"].values
     props["base_pra"] = up_players["base_pra"].values
-    teams = fs.team_feats[["team_id", "team"]].drop_duplicates("team_id").set_index("team_id")["team"]
-    props["team"] = props["team_id"].map(teams)
-    props["opp"] = props["opp_id"].map(teams)
+    abbr = {tid: v[0] for tid, v in TEAMS.items()}
+    props["team"] = props["team_id"].map(abbr)
+    props["opp"] = props["opp_id"].map(abbr)
     bets = evaluate_prop_bets(props[props["listed_out"] == 0], store.read("prop_lines"), PropCalibrator.load())
     props = _attach_prop_lines(props, bets)
-    store.write("prop_bets", bets)
 
+    store.write("prop_bets", bets)
     store.write("pred_games", preds)
     store.write("pred_props", props)
     store.write("pred_history", preds, mode="append")
     store.write("upcoming_game_features", upcoming)
     store.write("upcoming_player_features", up_players)
-    store.write("feature_importance", game_model.feature_importance())
-    store.set_meta(trained_through=game_model.trained_through, sigma_home=game_model.sigma_home,
-                   sigma_away=game_model.sigma_away, rho=game_model.rho,
-                   predicted_at=datetime.now().isoformat(timespec="seconds"))
+    store.set_meta(predicted_at=datetime.now().isoformat(timespec="seconds"))
     log.info("predicted %d games and %d player lines", len(preds), len(props))
     return {"games": len(preds), "props": len(props)}
+
+
+def quick_refresh(store: Storage, as_of: date | None = None) -> dict:
+    """Re-price today's slate in seconds, without new box scores or retraining:
+    latest injury report -> lineup/usage adjustments -> saved models re-run,
+    plus fresh Vegas lines, Kalshi prices and prop lines.
+
+    Returns a summary including games whose home win probability moved by >= 2 points."""
+    from src.data.injuries import load_injuries
+    from src.models.simulator import apply_lineup
+
+    as_of = as_of or config.today()
+    game_model, props_model = GameModel.load(), PropsModel.load()
+    gf, pf, sched = store.read("upcoming_game_features"), store.read("upcoming_player_features"), store.read("schedule")
+    if gf.empty or pf.empty:
+        return {"games": 0, "out_players": 0, "changes": [], "note": "no upcoming games"}
+    gf["game_date"], pf["game_date"] = pd.to_datetime(gf["game_date"]), pd.to_datetime(pf["game_date"])
+    gf, pf = gf[gf["game_date"] >= pd.Timestamp(as_of)], pf[pf["game_date"] >= pd.Timestamp(as_of)]
+    if gf.empty:
+        return {"games": 0, "out_players": 0, "changes": [],
+                "note": "the stored slate has already been played; run the full update for new games"}
+    sched = sched[pd.to_datetime(sched["game_date"]) >= pd.Timestamp(as_of)] if not sched.empty else sched
+    before = store.read("pred_games")[["game_id", "home", "away", "home_win_prob"]]
+
+    # injuries: fresh report if reachable, otherwise keep the statuses we already have
+    injuries = load_injuries(pf[["player_id", "player_name"]].drop_duplicates())
+    if injuries.empty:
+        out_ids = set(pf.loc[pf["listed_out"] == 1, "player_id"].astype(int))
+        injury_source = "previous report"
+    else:
+        store.write("injuries", injuries)
+        out_ids = set(injuries.loc[injuries["status"].str.upper().isin(["OUT", "DOUBTFUL"]), "player_id"].astype(int))
+        injury_source = "live report"
+
+    refresh_markets(store, sched, as_of)
+    store.write("prop_lines", prop_odds.load_prop_lines(pf[["player_id", "player_name"]].drop_duplicates(), sched))
+
+    games, players = [], []
+    for gid, g in gf.groupby("game_id", sort=False):
+        p = pf[pf["game_id"] == gid].reset_index(drop=True)
+        g2, p2 = apply_lineup(g.reset_index(drop=True), p, out_ids & set(p["player_id"].astype(int)))
+        games.append(g2)
+        players.append(p2)
+    summary = publish_predictions(store, game_model, props_model, pd.concat(games, ignore_index=True),
+                                  pd.concat(players, ignore_index=True))
+
+    after = store.read("pred_games")[["game_id", "home_win_prob"]]
+    moved = before.merge(after, on="game_id", suffixes=("_before", "_after"))
+    moved = moved[(moved["home_win_prob_after"] - moved["home_win_prob_before"]).abs() >= 0.02]
+    summary.update(out_players=int(sum(pf["player_id"].astype(int).isin(out_ids))), injury_source=injury_source,
+                   changes=[(f"{r.away} @ {r.home}", float(r.home_win_prob_before), float(r.home_win_prob_after))
+                            for r in moved.itertuples()])
+    store.set_meta(quick_refreshed_at=datetime.now().isoformat(timespec="seconds"))
+    return summary
 
 
 def _attach_prop_lines(props: pd.DataFrame, bets: pd.DataFrame) -> pd.DataFrame:

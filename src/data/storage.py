@@ -57,6 +57,10 @@ class Storage:
     def write(self, table: str, df: pd.DataFrame, mode: str = "replace") -> None:
         """Write a DataFrame. mode='replace' overwrites, 'append' inserts rows."""
         with self._conn() as con:
+            if df.shape[1] == 0:  # nothing to store: replacing means "no data", so drop the table
+                if mode == "replace":
+                    con.execute(f'DROP TABLE IF EXISTS "{table}"')
+                return
             con.register("_df", df)
             if mode == "replace" or not self._exists(con, table):
                 con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM _df')

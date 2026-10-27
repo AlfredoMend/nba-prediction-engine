@@ -84,6 +84,12 @@ integer scores, simulated overtime) then gives win, cover and over probabilities
 (median) and an 80% interval. Over-probabilities against a line come from a two-piece normal
 fitted through the three quantiles.
 
+## Refreshing from the site
+
+The sidebar's **⚡ Quick refresh** re-prices today's games in seconds from the latest injuries,
+odds and Kalshi prices using the current models. **🔄 Full rerun** starts the GitHub workflow
+(new games + retrain, about 10 minutes). Setup is in [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Vegas vs Kalshi
 
 Every run fetches two kinds of market line for upcoming games:

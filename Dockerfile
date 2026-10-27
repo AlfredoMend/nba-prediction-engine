@@ -1,5 +1,5 @@
 # NBA Prediction Engine - Streamlit UI + pipeline in one image.
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 # libgomp is required by LightGBM / XGBoost
